@@ -604,6 +604,7 @@ function applySession(authSession) {
     : null;
 
   if (changed && session) {
+    if (['', 'signin', 'signup'].includes(route())) navigate('board');
     renderTopbar();
     renderSettings();
     loadApps();
