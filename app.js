@@ -839,11 +839,7 @@ function buildAuth(mode) {
       <button type="button" class="link-btn" data-mode="signin">Back to sign in</button>
     </p>` : `
     <div class="or-row" style="margin-top:16px"><span>OR</span></div>
-    <button type="button" class="btn btn-block" data-google style="margin-top:16px">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.35 11.1h-9.17v2.92h6.41c-.44 2.6-2.7 4.15-6.41 4.15-3.7 0-6.68-2.98-6.68-6.67s2.98-6.67 6.68-6.67c1.9 0 3.53.7 4.8 1.9l2.1-2.1C16.9 2.9 14.5 2 12.18 2 6.99 2 2.9 6.09 2.9 11.5s4.09 9.5 9.28 9.5c5.36 0 8.9-3.76 8.9-9.07 0-.73-.1-1.25-.23-1.83z"/></svg>
-      Continue with Google
-    </button>
-    <button type="button" class="btn btn-demo btn-block" data-demo style="margin-top:12px">
+    <button type="button" class="btn btn-demo btn-block" data-demo style="margin-top:16px">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
       Use the demo account
     </button>
@@ -905,11 +901,6 @@ async function signInDemo() {
 
 authCard.addEventListener('click', (e) => {
   if (e.target.closest('[data-demo]')) { signInDemo(); return; }
-  if (e.target.closest('[data-google]')) {
-    supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: `${location.origin}${location.pathname}` } })
-      .then(({ error }) => { if (error) toast(`Could not start Google sign-in - ${error.message}`); });
-    return;
-  }
   const alt = e.target.closest('[data-mode]');
   if (alt) navigate(alt.dataset.mode);
 });

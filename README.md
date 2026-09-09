@@ -28,20 +28,8 @@ demo account only.
 - Undo-able delete (5s toast)
 - Password reset by email ("Forgot password?"); recovery links land on a
   choose-a-new-password screen
-- Google sign-in (enable the Google provider in Supabase Auth and add the
-  site URL to the redirect allowlist first)
 - CSV export (Settings > Data)
 - Snapshot funnel stats: active applications, interview rate, offer rate
-
-## Weekly deadline digest (optional)
-
-`supabase/functions/digest-weekly` emails every user their deadlines for the
-next 7 days. To enable:
-
-1. `supabase secrets set RESEND_API_KEY=re_xxx` (and optionally
-   `DIGEST_FROM_EMAIL="Pipeline <digest@yourdomain.com>"`)
-2. Paste your service key into `supabase/cron.sql` and run it in the SQL
-   editor (schedules Monday 08:00 UTC)
 
 ## Deploy
 
