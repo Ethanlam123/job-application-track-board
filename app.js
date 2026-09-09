@@ -242,7 +242,8 @@ board.addEventListener('dragend', (e) => {
 });
 
 /* ---------- data loading ---------- */
-async function loadApps() {
+let seeding = false;   // one seed at a time; two concurrent empty reads would double-seed
+async function loadApps(canSeed = true) {
   const uid = currentUserId;   // drop the result if the session changes mid-flight
   boardNote.hidden = false;
   boardNote.textContent = 'loading your board...';
@@ -254,11 +255,17 @@ async function loadApps() {
     return;
   }
   apps = data.map(toApp);
-  if (isDemo() && apps.length === 0) {
-    const { data: rows, error: insErr } = await supabase.from('applications').insert(seed().map(toRow)).select();
-    if (uid !== currentUserId) return;
-    if (insErr) toast(`Could not seed demo data - ${insErr.message}`);
-    else apps = rows.map(toApp);
+  /* seed only on direct loads; realtime refetches must never write */
+  if (canSeed && !seeding && isDemo() && apps.length === 0) {
+    seeding = true;
+    try {
+      const { data: rows, error: insErr } = await supabase.from('applications').insert(seed().map(toRow)).select();
+      if (uid !== currentUserId) return;
+      if (insErr) toast(`Could not seed demo data - ${insErr.message}`);
+      else apps = rows.map(toApp);
+    } finally {
+      seeding = false;
+    }
   }
   boardNote.hidden = true;
   render();
@@ -274,7 +281,7 @@ function subscribeApps() {
     .channel('apps')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'applications' }, () => {
       clearTimeout(reloadTimer);
-      reloadTimer = setTimeout(() => { if (currentUserId) loadApps(); }, 300);
+      reloadTimer = setTimeout(() => { if (currentUserId) loadApps(false); }, 300);
     })
     .subscribe();
 }
