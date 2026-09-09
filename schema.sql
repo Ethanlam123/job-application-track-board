@@ -1,5 +1,5 @@
 -- Pipeline - job application tracker schema.
--- Run this once in the Supabase SQL editor.
+-- Idempotent: safe to run in the Supabase SQL editor on a fresh or existing install.
 
 create table if not exists public.applications (
   id uuid primary key default gen_random_uuid(),
@@ -19,6 +19,14 @@ create table if not exists public.applications (
   notes text not null default '',
   created_at timestamptz not null default now()
 );
+
+-- url must be http(s) or empty; enforced client-side too, but the shared demo
+-- account makes the server the only enforcement point that counts
+alter table public.applications
+  drop constraint if exists applications_url_scheme_check;
+alter table public.applications
+  add constraint applications_url_scheme_check
+  check (url = '' or url ~ '^https?://');
 
 alter table public.applications enable row level security;
 

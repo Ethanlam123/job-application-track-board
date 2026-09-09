@@ -1,7 +1,7 @@
 'use strict';
 
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js';
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0/+esm';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
@@ -265,7 +265,9 @@ function renderDrawer() {
           ${field('Deadline', app.deadline ? esc(fmtShort(app.deadline) + ', ' + parseDate(app.deadline).getFullYear()) : '')}
           ${field('Salary', `<span class="od-nowrap">${esc(app.salary)}</span>`)}
           ${field('Source', esc(app.source))}
-          ${field('Job link', app.url ? `<a class="joblink" href="${esc(app.url)}" target="_blank" rel="noopener noreferrer">${esc(linkText)} ${icon('external', 12)}</a>` : '')}
+          ${field('Job link', app.url ? (/^https?:\/\//i.test(app.url)
+            ? `<a class="joblink" href="${esc(app.url)}" target="_blank" rel="noopener noreferrer">${esc(linkText)} ${icon('external', 12)}</a>`
+            : esc(app.url)) : '')}
           ${field('Contact', app.contactName ? esc(app.contactName + (app.contactRole ? ` (${app.contactRole})` : '')) : '')}
         </dl>
       </div>
