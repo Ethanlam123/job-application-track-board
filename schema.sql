@@ -31,6 +31,9 @@ alter table public.applications
 -- every query filters on user_id through the RLS policy
 create index if not exists applications_user_id_idx on public.applications (user_id);
 
+-- realtime board sync; postgres_changes respect the RLS policy above
+alter publication supabase_realtime add table public.applications;
+
 alter table public.applications enable row level security;
 
 -- users can only see and touch their own rows

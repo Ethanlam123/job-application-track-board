@@ -32,6 +32,7 @@ const seed = () => ([
 ]);
 
 let apps = [];
+let query = '';         // board search filter, lowercase, or ''
 let drawerFor = null;   // app id shown in the drawer, or null
 let editingId = null;   // app id being edited in the form, or null
 
@@ -96,6 +97,8 @@ const toRow = (a) => ({
 /* ---------- board render ---------- */
 const board = $('#board');
 const boardNote = $('#boardNote');
+const dueWrap = $('#dueWrap');
+const dueStrip = $('#dueStrip');
 
 function cardHTML(app) {
   const meta = app.applied
@@ -125,10 +128,31 @@ function cardHTML(app) {
     </article>`;
 }
 
+const matches = (a) => !query
+  || [a.company, a.role, a.notes, a.location].some((v) => v.toLowerCase().includes(query));
+
+function renderDue() {
+  const soon = apps
+    .filter((a) => a.deadline && daysUntil(a.deadline) <= 7)
+    .sort(byDeadline);
+  dueWrap.hidden = soon.length === 0;
+  dueStrip.innerHTML = soon.map((a) => {
+    const d = daysUntil(a.deadline);
+    const urgent = d <= prefs.warnDays;
+    const label = d < 0 ? `Overdue ${fmtShort(a.deadline)}` : d === 0 ? 'Today' : fmtShort(a.deadline);
+    return `
+      <button type="button" class="due-card" data-open="${a.id}">
+        <span class="due-co od-truncate">${esc(a.company)}</span>
+        <span class="due-date ${urgent ? 'urgent' : ''}">${esc(label)}</span>
+      </button>`;
+  }).join('');
+}
+
 function render() {
+  renderDue();
   board.innerHTML = '';
   for (const stage of STAGES) {
-    const list = apps.filter((a) => a.stage === stage.id).sort(byDeadline);
+    const list = apps.filter((a) => a.stage === stage.id && matches(a)).sort(byDeadline);
     const col = document.createElement('section');
     col.className = 'col';
     col.dataset.stage = stage.id;
@@ -140,7 +164,7 @@ function render() {
         <span class="col-count">${list.length}</span>
       </header>
       <div class="col-cards od-stack">
-        ${list.length ? list.map(cardHTML).join('') : `<p class="col-empty">Nothing here yet.<br>Drag a card over, or add one below.</p>`}
+        ${list.length ? list.map(cardHTML).join('') : `<p class="col-empty">${query ? 'No matches here.<br>Clear the search to see everything.' : 'Nothing here yet.<br>Drag a card over, or add one below.'}</p>`}
       </div>
       <button type="button" class="col-add" data-addstage="${stage.id}">+ Add application</button>`;
 
@@ -166,10 +190,13 @@ function render() {
 
 function renderStats() {
   const count = (stage) => apps.filter((a) => a.stage === stage).length;
+  /* conversion rates are snapshot-based: apps that were ever sent out */
+  const sent = count('applied') + count('interview') + count('offer') + count('rejected');
+  const pct = (n) => (sent ? Math.round((n / sent) * 100) + '%' : '-');
   $('#statTotal').textContent = String(apps.length);
-  $('#statInterview').textContent = String(count('interview'));
-  $('#statOffer').textContent = String(count('offer'));
-  $('#statWishlist').textContent = String(count('wishlist'));
+  $('#statActive').textContent = String(count('applied') + count('interview') + count('offer'));
+  $('#statInterview').textContent = pct(count('interview') + count('offer'));
+  $('#statOffer').textContent = pct(count('offer'));
 }
 
 /* delegated clicks: open card / add-in-column */
@@ -178,6 +205,26 @@ board.addEventListener('click', (e) => {
   if (openBtn) { openDrawer(openBtn.dataset.open); return; }
   const addBtn = e.target.closest('[data-addstage]');
   if (addBtn) openForm(addBtn.dataset.addstage);
+});
+
+/* due-soon strip opens the same drawer */
+dueStrip.addEventListener('click', (e) => {
+  const openBtn = e.target.closest('[data-open]');
+  if (openBtn) openDrawer(openBtn.dataset.open);
+});
+
+/* board search */
+const searchInput = $('#searchInput');
+searchInput.addEventListener('input', () => {
+  query = searchInput.value.trim().toLowerCase();
+  render();
+});
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && searchInput.value) {
+    searchInput.value = '';
+    query = '';
+    render();
+  }
 });
 
 /* drag handlers live on cards (fresh nodes each render, delegated via capture on board) */
@@ -215,6 +262,25 @@ async function loadApps() {
   }
   boardNote.hidden = true;
   render();
+}
+
+/* ---------- realtime sync ----------
+   RLS scopes postgres_changes to the signed-in user's rows, so a plain
+   debounced refetch is all a change needs - no merge logic. */
+let appsChannel = null;
+let reloadTimer = null;
+function subscribeApps() {
+  appsChannel = supabase
+    .channel('apps')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'applications' }, () => {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => { if (currentUserId) loadApps(); }, 300);
+    })
+    .subscribe();
+}
+function unsubscribeApps() {
+  clearTimeout(reloadTimer);
+  if (appsChannel) { supabase.removeChannel(appsChannel); appsChannel = null; }
 }
 
 /* ---------- drawer ---------- */
@@ -309,7 +375,17 @@ drawerIn.addEventListener('click', async (e) => {
       drawerFor = null;
       drawer.close();
       render();
-      toast(`Deleted ${app.company}`);
+      toast(`Deleted ${app.company}`, {
+        label: 'Undo',
+        fn: async () => {
+          /* reinsert with the old id so references (drawer, links) stay valid */
+          const { error: insErr } = await supabase.from('applications').insert({ ...toRow(app), id: app.id });
+          if (insErr) { toast(`Could not restore - ${insErr.message}`); return; }
+          apps = [...apps, app];
+          render();
+          toast(`Restored ${app.company}`);
+        },
+      });
     } else {
       delBtn.classList.add('armed');
       delBtn.querySelector('span').textContent = 'Confirm delete?';
@@ -509,6 +585,22 @@ async function clearAll() {
 }
 
 $('#newBtn').addEventListener('click', () => openForm(null));
+$('#exportBtn').addEventListener('click', () => {
+  if (!apps.length) { toast('Nothing to export yet'); return; }
+  const cols = ['company', 'role', 'stage', 'location', 'source', 'salary', 'url', 'contactName', 'contactRole', 'applied', 'deadline', 'notes'];
+  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const rows = [cols.join(','), ...apps.map((a) => cols
+    .map((c) => q(c === 'stage' ? (stageOf(a.stage)?.label ?? a.stage) : a[c]))
+    .join(','))];
+  const url = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' }));
+  const link = Object.assign(document.createElement('a'), {
+    href: url,
+    download: `pipeline-${new Date().toISOString().slice(0, 10)}.csv`,
+  });
+  link.click();
+  URL.revokeObjectURL(url);
+  toast(`Exported ${apps.length} applications`);
+});
 $('#resetBtn').addEventListener('click', (e) => armButton(e.currentTarget, 'Confirm clear?', clearAll));
 $('#resetBtn2').addEventListener('click', (e) => armButton(e.currentTarget, 'Confirm clear?', clearAll));
 $('#signOutBtn').addEventListener('click', async () => {
@@ -564,12 +656,44 @@ $('#n-name').addEventListener('blur', () => {
   else clearError('n-name', '#n-name');
 });
 
+/* password recovery: the email link signs the user in and lands on #/resetpw */
+$('#resetForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('#r-pass');
+  const value = input.value;
+  if (value.length < 8) {
+    showError('r-pass', 'Use at least 8 characters for the password.', '#r-pass');
+    input.focus();
+    return;
+  }
+  clearError('r-pass', '#r-pass');
+  const btn = e.target.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    const { error } = await supabase.auth.updateUser({ password: value });
+    if (error) {
+      const s = $('#resetSummary');
+      s.textContent = error.message;
+      s.hidden = false;
+      return;
+    }
+    $('#resetSummary').hidden = true;
+    input.value = '';
+    toast('Password updated');
+    navigate('board');
+    renderView();
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 /* ---------- views, routing, auth ---------- */
-const VIEWS = ['signin', 'signup', 'board', 'settings'];
+const VIEWS = ['signin', 'signup', 'forgot', 'board', 'settings', 'resetpw'];
 const topbar = $('#topbar');
 const viewBoard = $('#view-board');
 const viewSettings = $('#view-settings');
 const viewAuth = $('#view-auth');
+const viewReset = $('#view-reset');
 const authCard = $('#authCard');
 
 const emailOk = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
@@ -583,18 +707,21 @@ function navigate(view) { location.hash = '/' + view; }
 function renderView() {
   let r = route();
   if (!session) {
-    if (r !== 'signup') r = 'signin';
-  } else if (!r || r === 'signin' || r === 'signup') {
+    if (!['signup', 'forgot'].includes(r)) r = 'signin';
+  } else if (!r || ['signin', 'signup', 'forgot'].includes(r)) {
     r = 'board';
   }
-  const authMode = !session;
-  viewAuth.hidden = !authMode;
+  /* a recovery link signs the user in mid-flow; show the reset form, not the board */
+  const isReset = !!session && r === 'resetpw';
+  const authMode = !session || isReset;
+  viewAuth.hidden = isReset || !!session;
+  viewReset.hidden = !isReset;
   topbar.hidden = authMode;
   viewBoard.hidden = authMode || r !== 'board';
   viewSettings.hidden = authMode || r !== 'settings';
   if (r === 'settings') $('#userChip').setAttribute('aria-current', 'page');
   else $('#userChip').removeAttribute('aria-current');
-  if (authMode) showAuth(r === 'signup' ? 'signup' : 'signin');
+  if (!session) showAuth(r === 'signup' ? 'signup' : r === 'forgot' ? 'forgot' : 'signin');
   if (r === 'board') render();
 }
 
@@ -624,11 +751,15 @@ function applySession(authSession) {
     if (['', 'signin', 'signup'].includes(route())) navigate('board');
     renderTopbar();
     renderSettings();
+    subscribeApps();
     loadApps();
-    toast(justSignedUp ? `Welcome, ${session.name.split(' ')[0]}` : `Signed in as ${session.name.split(' ')[0]}`);
+    toast(route() === 'resetpw'
+      ? 'Choose a new password to finish'
+      : justSignedUp ? `Welcome, ${session.name.split(' ')[0]}` : `Signed in as ${session.name.split(' ')[0]}`);
     justSignedUp = false;
   }
   if (changed && !session) {
+    unsubscribeApps();
     apps = [];
     drawerFor = null;
     if (drawer.open) drawer.close();
@@ -644,12 +775,13 @@ function applySession(authSession) {
    in the live card and in every cached auth mode */
 function resetAuthInputs() {
   for (const root of [authCard, ...Object.values(authCache)]) {
+    const demo = root.dataset.mode === 'signin';
     const name = root.querySelector('#a-name');
     const email = root.querySelector('#a-email');
     const pass = root.querySelector('#a-pass');
     if (name) name.value = '';
-    if (email) email.value = DEMO_EMAIL;
-    if (pass) pass.value = DEMO_PASS;
+    if (email) email.value = demo ? DEMO_EMAIL : '';
+    if (pass) pass.value = demo ? DEMO_PASS : '';
   }
 }
 
@@ -666,8 +798,9 @@ function showAuth(mode) {
 
 function buildAuth(mode) {
   const isUp = mode === 'signup';
+  const isForgot = mode === 'forgot';
   authCard.innerHTML = `
-    <div class="auth-inner">
+    <div class="auth-inner" data-mode="${mode}">
     <div class="brand od-row auth-brand">
       <span class="logo" aria-hidden="true">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
@@ -677,8 +810,8 @@ function buildAuth(mode) {
         <p>job application tracker</p>
       </div>
     </div>
-    <h2 class="auth-title">${isUp ? 'Create your account' : 'Welcome back'}</h2>
-    <p class="auth-sub">${isUp ? 'Track every application from wishlist to offer.' : 'Sign in to your board.'}</p>
+    <h2 class="auth-title">${isForgot ? 'Reset your password' : isUp ? 'Create your account' : 'Welcome back'}</h2>
+    <p class="auth-sub">${isForgot ? 'Enter your email and we will send a reset link.' : isUp ? 'Track every application from wishlist to offer.' : 'Sign in to your board.'}</p>
     <div class="form-summary" id="authSummary" role="alert" hidden></div>
     <form class="auth-form" id="authForm" novalidate>
       ${isUp ? `
@@ -692,25 +825,38 @@ function buildAuth(mode) {
         <input type="text" id="a-email" autocomplete="email" inputmode="email" required aria-describedby="e-a-email">
         <p class="err" id="e-a-email" hidden></p>
       </div>
+      ${isForgot ? '' : `
       <div class="field-wrap">
         <label for="a-pass">Password <span class="req" aria-hidden="true">*</span></label>
         <input type="password" id="a-pass" autocomplete="${isUp ? 'new-password' : 'current-password'}" required aria-describedby="e-a-pass">
         ${isUp ? '<p class="helper">At least 8 characters</p>' : ''}
         <p class="err" id="e-a-pass" hidden></p>
-      </div>
-      <button type="submit" class="btn btn-primary btn-block">${isUp ? 'Create account' : 'Sign in'}</button>
+      </div>`}
+      <button type="submit" class="btn btn-primary btn-block">${isForgot ? 'Send reset link' : isUp ? 'Create account' : 'Sign in'}</button>
     </form>
+    ${isForgot ? `
+    <p class="auth-alt">Remembered it?
+      <button type="button" class="link-btn" data-mode="signin">Back to sign in</button>
+    </p>` : `
     <div class="or-row" style="margin-top:16px"><span>OR</span></div>
-    <button type="button" class="btn btn-demo btn-block" data-demo style="margin-top:16px">
+    <button type="button" class="btn btn-block" data-google style="margin-top:16px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.35 11.1h-9.17v2.92h6.41c-.44 2.6-2.7 4.15-6.41 4.15-3.7 0-6.68-2.98-6.68-6.67s2.98-6.67 6.68-6.67c1.9 0 3.53.7 4.8 1.9l2.1-2.1C16.9 2.9 14.5 2 12.18 2 6.99 2 2.9 6.09 2.9 11.5s4.09 9.5 9.28 9.5c5.36 0 8.9-3.76 8.9-9.07 0-.73-.1-1.25-.23-1.83z"/></svg>
+      Continue with Google
+    </button>
+    <button type="button" class="btn btn-demo btn-block" data-demo style="margin-top:12px">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
       Use the demo account
     </button>
     <p class="auth-alt">${isUp ? 'Already have an account?' : 'New here?'}
       <button type="button" class="link-btn" data-mode="${isUp ? 'signin' : 'signup'}">${isUp ? 'Sign in' : 'Create an account'}</button>
     </p>
+    ${isUp ? '' : `
+    <p class="auth-alt" style="margin-top:8px">
+      <button type="button" class="link-btn" data-mode="forgot">Forgot password?</button>
+    </p>`}`}
     </div>`;
 
-  if (!isUp) {
+  if (!isUp && !isForgot) {
     $('#a-email').value = 'demo@pipeline.app';
     $('#a-pass').value = 'demo1234';
   }
@@ -759,6 +905,11 @@ async function signInDemo() {
 
 authCard.addEventListener('click', (e) => {
   if (e.target.closest('[data-demo]')) { signInDemo(); return; }
+  if (e.target.closest('[data-google]')) {
+    supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: `${location.origin}${location.pathname}` } })
+      .then(({ error }) => { if (error) toast(`Could not start Google sign-in - ${error.message}`); });
+    return;
+  }
   const alt = e.target.closest('[data-mode]');
   if (alt) navigate(alt.dataset.mode);
 });
@@ -779,6 +930,22 @@ authCard.addEventListener('submit', async (e) => {
   }
   summary.hidden = true;
   const email = $('#a-email').value.trim().toLowerCase();
+
+  if (mode === 'forgot') {
+    const btn = authCard.querySelector('#authForm button[type="submit"]');
+    btn.disabled = true;
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${location.origin}${location.pathname}#/resetpw`,
+      });
+      summary.textContent = error ? error.message : 'Check your inbox - the reset link is on its way.';
+    } finally {
+      btn.disabled = false;
+    }
+    summary.hidden = false;
+    return;
+  }
+
   const pass = $('#a-pass').value;
   const submitBtn = authCard.querySelector('#authForm button[type="submit"]');
   submitBtn.disabled = true;   // double submits burn auth rate limits
@@ -836,20 +1003,32 @@ authCard.addEventListener('submit', async (e) => {
 });
 
 /* ---------- toasts ---------- */
-function toast(msg) {
+function toast(msg, action) {
   const el = document.createElement('div');
   el.className = 'toast';
   el.setAttribute('role', 'status');
   el.textContent = msg;
+  if (action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'toast-btn';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => { el.remove(); action.fn(); });
+    el.appendChild(btn);
+  }
   $('#toasts').appendChild(el);
   setTimeout(() => {
     el.classList.add('bye');
     setTimeout(() => el.remove(), 220);
-  }, 2400);
+  }, action ? 5200 : 2400);
 }
 
 /* ---------- go ---------- */
 window.addEventListener('hashchange', renderView);
-supabase.auth.onAuthStateChange((_event, s) => applySession(s));
+supabase.auth.onAuthStateChange((event, s) => {
+  /* a recovery link signs the user in; steer it to the reset form */
+  if (event === 'PASSWORD_RECOVERY') navigate('resetpw');
+  applySession(s);
+});
 const { data: { session: initialSession } } = await supabase.auth.getSession();
 applySession(initialSession);
