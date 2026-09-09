@@ -485,20 +485,27 @@ function armButton(btn, confirmText, action) {
   }, 3000);
 }
 
+let clearing = false;
 async function clearAll() {
-  /* RLS scopes the delete to the signed-in user; the filter just satisfies
-     postgrest-js's guarded full-table delete */
-  const { error } = await supabase.from('applications').delete().neq('user_id', '00000000-0000-0000-0000-000000000000');
-  if (error) { toast(`Could not clear - ${error.message}`); return; }
-  if (isDemo()) {
-    const { data, error: insErr } = await supabase.from('applications').insert(seed().map(toRow)).select();
-    apps = insErr ? [] : data.map(toApp);
-    toast(insErr ? 'Board cleared' : 'Demo data restored');
-  } else {
-    apps = [];
-    toast('Board cleared');
+  if (clearing) return;   // a second confirm click mid-clear would double-seed
+  clearing = true;
+  try {
+    /* RLS scopes the delete to the signed-in user; the filter just satisfies
+       postgrest-js's guarded full-table delete */
+    const { error } = await supabase.from('applications').delete().neq('user_id', '00000000-0000-0000-0000-000000000000');
+    if (error) { toast(`Could not clear - ${error.message}`); return; }
+    if (isDemo()) {
+      const { data, error: insErr } = await supabase.from('applications').insert(seed().map(toRow)).select();
+      apps = insErr ? [] : data.map(toApp);
+      toast(insErr ? 'Board cleared' : 'Demo data restored');
+    } else {
+      apps = [];
+      toast('Board cleared');
+    }
+    render();
+  } finally {
+    clearing = false;
   }
-  render();
 }
 
 $('#newBtn').addEventListener('click', () => openForm(null));
@@ -621,15 +628,29 @@ function applySession(authSession) {
     toast(justSignedUp ? `Welcome, ${session.name.split(' ')[0]}` : `Signed in as ${session.name.split(' ')[0]}`);
     justSignedUp = false;
   }
-  if (changed && !session && location.hash !== '#/signin') {
+  if (changed && !session) {
     apps = [];
     drawerFor = null;
     if (drawer.open) drawer.close();
     if (appDialog.open) appDialog.close();
+    resetAuthInputs();
     navigate('signin');
     toast('Signed out');
   }
   renderView();
+}
+
+/* sign-out: drop whatever was typed and restore the demo prefill,
+   in the live card and in every cached auth mode */
+function resetAuthInputs() {
+  for (const root of [authCard, ...Object.values(authCache)]) {
+    const name = root.querySelector('#a-name');
+    const email = root.querySelector('#a-email');
+    const pass = root.querySelector('#a-pass');
+    if (name) name.value = '';
+    if (email) email.value = DEMO_EMAIL;
+    if (pass) pass.value = DEMO_PASS;
+  }
 }
 
 const authCache = {};
@@ -759,53 +780,58 @@ authCard.addEventListener('submit', async (e) => {
   summary.hidden = true;
   const email = $('#a-email').value.trim().toLowerCase();
   const pass = $('#a-pass').value;
+  const submitBtn = authCard.querySelector('#authForm button[type="submit"]');
+  submitBtn.disabled = true;   // double submits burn auth rate limits
+  try {
+    if (mode === 'signup') {
+      const name = $('#a-name').value.trim();
+      justSignedUp = true;   /* set before await: SIGNED_IN can fire before the promise resolves */
+      const { data, error } = await supabase.auth.signUp({
+        email, password: pass,
+        options: { data: { name } },
+      });
+      if (error) {
+        justSignedUp = false;
+        if (/already registered|already exists/i.test(error.message)) {
+          summary.textContent = 'That email already has an account - sign in instead.';
+          showError('a-email', 'This email is registered - try signing in.', '#a-email');
+        } else {
+          summary.textContent = error.message;
+        }
+        summary.hidden = false;
+        return;
+      }
+      if (!data.session) {
+        /* with email confirmation on, an existing email returns an obfuscated user with no identities */
+        const isDup = !!data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0;
+        if (isDup) {
+          justSignedUp = false;
+          summary.textContent = 'That email already has an account - sign in instead.';
+          showError('a-email', 'This email is registered - try signing in.', '#a-email');
+        } else {
+          justSignedUp = false;
+          summary.textContent = 'Check your inbox to confirm your email, then sign in.';
+        }
+        summary.hidden = false;
+        return;
+      }
+      return;   /* onAuthStateChange finishes the sign-in */
+    }
 
-  if (mode === 'signup') {
-    const name = $('#a-name').value.trim();
-    justSignedUp = true;   /* set before await: SIGNED_IN can fire before the promise resolves */
-    const { data, error } = await supabase.auth.signUp({
-      email, password: pass,
-      options: { data: { name } },
-    });
+    const { error } = await supabase.auth.signInWithPassword({ email, password: pass });
     if (error) {
-      justSignedUp = false;
-      if (/already registered|already exists/i.test(error.message)) {
-        summary.textContent = 'That email already has an account - sign in instead.';
-        showError('a-email', 'This email is registered - try signing in.', '#a-email');
+      if (/invalid login credentials/i.test(error.message)) {
+        summary.textContent = 'No account matches that email, or the password is wrong.';
+        showError('a-email', 'No account for this email, or wrong password.', '#a-email');
+      } else if (/email not confirmed/i.test(error.message)) {
+        summary.textContent = 'Check your inbox to confirm your email, then sign in.';
       } else {
         summary.textContent = error.message;
       }
       summary.hidden = false;
-      return;
     }
-    if (!data.session) {
-      /* with email confirmation on, an existing email returns an obfuscated user with no identities */
-      const isDup = !!data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0;
-      if (isDup) {
-        justSignedUp = false;
-        summary.textContent = 'That email already has an account - sign in instead.';
-        showError('a-email', 'This email is registered - try signing in.', '#a-email');
-      } else {
-        justSignedUp = false;
-        summary.textContent = 'Check your inbox to confirm your email, then sign in.';
-      }
-      summary.hidden = false;
-      return;
-    }
-    return;   /* onAuthStateChange finishes the sign-in */
-  }
-
-  const { error } = await supabase.auth.signInWithPassword({ email, password: pass });
-  if (error) {
-    if (/invalid login credentials/i.test(error.message)) {
-      summary.textContent = 'No account matches that email, or the password is wrong.';
-      showError('a-email', 'No account for this email, or wrong password.', '#a-email');
-    } else if (/email not confirmed/i.test(error.message)) {
-      summary.textContent = 'Check your inbox to confirm your email, then sign in.';
-    } else {
-      summary.textContent = error.message;
-    }
-    summary.hidden = false;
+  } finally {
+    submitBtn.disabled = false;
   }
 });
 
