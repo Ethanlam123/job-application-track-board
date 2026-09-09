@@ -86,6 +86,7 @@ const toApp = (r) => ({
   applied: r.applied ?? '', deadline: r.deadline ?? '', notes: r.notes ?? '',
 });
 const toRow = (a) => ({
+  user_id: currentUserId,   /* set by applySession; RLS requires it to match auth.uid() */
   company: a.company, role: a.role, location: a.location, stage: a.stage,
   source: a.source, salary: a.salary, url: a.url,
   contact_name: a.contactName, contact_role: a.contactRole,
@@ -206,7 +207,8 @@ async function loadApps() {
   apps = data.map(toApp);
   if (isDemo() && apps.length === 0) {
     const { data: rows, error: insErr } = await supabase.from('applications').insert(seed().map(toRow)).select();
-    if (!insErr) apps = rows.map(toApp);
+    if (insErr) toast(`Could not seed demo data - ${insErr.message}`);
+    else apps = rows.map(toApp);
   }
   boardNote.hidden = true;
   render();
