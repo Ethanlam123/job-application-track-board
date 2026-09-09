@@ -196,10 +196,12 @@ board.addEventListener('dragend', (e) => {
 
 /* ---------- data loading ---------- */
 async function loadApps() {
+  const uid = currentUserId;   // drop the result if the session changes mid-flight
   boardNote.hidden = false;
   boardNote.textContent = 'loading your board...';
   render();
   const { data, error } = await supabase.from('applications').select('*');
+  if (uid !== currentUserId) return;
   if (error) {
     boardNote.textContent = `could not load your board - ${error.message}`;
     return;
@@ -207,6 +209,7 @@ async function loadApps() {
   apps = data.map(toApp);
   if (isDemo() && apps.length === 0) {
     const { data: rows, error: insErr } = await supabase.from('applications').insert(seed().map(toRow)).select();
+    if (uid !== currentUserId) return;
     if (insErr) toast(`Could not seed demo data - ${insErr.message}`);
     else apps = rows.map(toApp);
   }
@@ -453,9 +456,11 @@ async function setStage(id, stage) {
   toast(`Moved ${app.company} to ${stageOf(stage).label}`);
   const { error } = await supabase.from('applications').update({ stage }).eq('id', id);
   if (error) {
-    app.stage = prev;
-    render();
-    if (drawer.open && drawerFor === id) renderDrawer();
+    if (app.stage === stage) {   // a newer move already landed; leave it alone
+      app.stage = prev;
+      render();
+      if (drawer.open && drawerFor === id) renderDrawer();
+    }
     toast(`Could not save - ${error.message}`);
   }
 }
@@ -499,7 +504,10 @@ async function clearAll() {
 $('#newBtn').addEventListener('click', () => openForm(null));
 $('#resetBtn').addEventListener('click', (e) => armButton(e.currentTarget, 'Confirm clear?', clearAll));
 $('#resetBtn2').addEventListener('click', (e) => armButton(e.currentTarget, 'Confirm clear?', clearAll));
-$('#signOutBtn').addEventListener('click', () => supabase.auth.signOut());
+$('#signOutBtn').addEventListener('click', async () => {
+  const { error } = await supabase.auth.signOut();
+  if (error) toast(`Could not sign out - ${error.message}`);
+});
 $('#userChip').addEventListener('click', () => {
   navigate('settings');
   renderView();
@@ -717,7 +725,13 @@ async function signInDemo() {
   let { error } = await supabase.auth.signInWithPassword({ email: DEMO_EMAIL, password: DEMO_PASS });
   if (error && /invalid login credentials/i.test(error.message)) {
     /* demo user missing on a fresh project: create it, then the auth event finishes the sign-in */
-    ({ error } = await supabase.auth.signUp({ email: DEMO_EMAIL, password: DEMO_PASS, options: { data: { name: 'Demo User' } } }));
+    const res = await supabase.auth.signUp({ email: DEMO_EMAIL, password: DEMO_PASS, options: { data: { name: 'Demo User' } } });
+    error = res.error;
+    if (!error && !res.data.session) {
+      /* fresh project with email confirmation on: nothing to sign in to yet */
+      toast('Demo account created - confirm its email, then try again');
+      return;
+    }
   }
   if (error) toast(`Demo account unavailable - ${error.message}`);
 }
@@ -748,11 +762,13 @@ authCard.addEventListener('submit', async (e) => {
 
   if (mode === 'signup') {
     const name = $('#a-name').value.trim();
+    justSignedUp = true;   /* set before await: SIGNED_IN can fire before the promise resolves */
     const { data, error } = await supabase.auth.signUp({
       email, password: pass,
       options: { data: { name } },
     });
     if (error) {
+      justSignedUp = false;
       if (/already registered|already exists/i.test(error.message)) {
         summary.textContent = 'That email already has an account - sign in instead.';
         showError('a-email', 'This email is registered - try signing in.', '#a-email');
@@ -763,12 +779,20 @@ authCard.addEventListener('submit', async (e) => {
       return;
     }
     if (!data.session) {
-      summary.textContent = 'Check your inbox to confirm your email, then sign in.';
+      /* with email confirmation on, an existing email returns an obfuscated user with no identities */
+      const isDup = !!data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0;
+      if (isDup) {
+        justSignedUp = false;
+        summary.textContent = 'That email already has an account - sign in instead.';
+        showError('a-email', 'This email is registered - try signing in.', '#a-email');
+      } else {
+        justSignedUp = false;
+        summary.textContent = 'Check your inbox to confirm your email, then sign in.';
+      }
       summary.hidden = false;
       return;
     }
-    justSignedUp = true;   /* onAuthStateChange finishes the sign-in */
-    return;
+    return;   /* onAuthStateChange finishes the sign-in */
   }
 
   const { error } = await supabase.auth.signInWithPassword({ email, password: pass });

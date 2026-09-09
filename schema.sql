@@ -28,6 +28,9 @@ alter table public.applications
   add constraint applications_url_scheme_check
   check (url = '' or url ~ '^https?://');
 
+-- every query filters on user_id through the RLS policy
+create index if not exists applications_user_id_idx on public.applications (user_id);
+
 alter table public.applications enable row level security;
 
 -- users can only see and touch their own rows
