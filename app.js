@@ -953,7 +953,7 @@ authCard.addEventListener('submit', async (e) => {
       justSignedUp = true;   /* set before await: SIGNED_IN can fire before the promise resolves */
       const { data, error } = await supabase.auth.signUp({
         email, password: pass,
-        options: { data: { name } },
+        options: { data: { name }, emailRedirectTo: `${location.origin}${location.pathname}` },
       });
       if (error) {
         justSignedUp = false;
